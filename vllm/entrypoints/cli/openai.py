@@ -13,7 +13,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from vllm.entrypoints.cli.types import CLISubcommand
 
 if TYPE_CHECKING:
-    from vllm.utils import FlexibleArgumentParser
+    from from vllm.utils.arg_parser import FlexibleArgumentParser
 else:
     FlexibleArgumentParser = argparse.ArgumentParser
 

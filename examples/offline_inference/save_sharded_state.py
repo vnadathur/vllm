@@ -30,7 +30,7 @@ from pathlib import Path
 
 from vllm import LLM, EngineArgs
 from vllm.model_executor.model_loader import ShardedStateLoader
-from vllm.utils import FlexibleArgumentParser
+from from vllm.utils.arg_parser import FlexibleArgumentParser
 
 
 def parse_args():

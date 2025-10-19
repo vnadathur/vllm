@@ -5,7 +5,7 @@ import gc
 from benchmark_utils import TimeCollector
 from tabulate import tabulate
 
-from vllm.utils import FlexibleArgumentParser
+from vllm.utils.arg_parser import FlexibleArgumentParser
 from vllm.v1.core.block_pool import BlockPool
 
 

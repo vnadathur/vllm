@@ -39,7 +39,7 @@ from vllm.distributed.device_communicators.pynccl_allocator import (
 )
 from vllm.distributed.device_communicators.symm_mem import SymmMemCommunicator
 from vllm.logger import init_logger
-from vllm.utils import FlexibleArgumentParser
+from from vllm.utils.arg_parser import FlexibleArgumentParser
 
 logger = init_logger(__name__)
 

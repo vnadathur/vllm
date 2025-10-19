@@ -16,7 +16,7 @@ from vllm.model_executor.model_loader.tensorizer import (
     tensorize_vllm_model,
     tensorizer_kwargs_arg,
 )
-from vllm.utils import FlexibleArgumentParser
+from from vllm.utils.arg_parser import FlexibleArgumentParser
 
 logger = logging.getLogger()
 

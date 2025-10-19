@@ -21,7 +21,7 @@ from vllm.entrypoints.openai.protocol import (
 )
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
+from from vllm.utils.arg_parser import FlexibleArgumentParser
 
 logger = init_logger(__name__)
 

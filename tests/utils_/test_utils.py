@@ -21,8 +21,8 @@ from vllm_test_utils.monitor import monitor
 from vllm.config import ParallelConfig, VllmConfig, set_current_vllm_config
 from vllm.transformers_utils.detokenizer_utils import convert_ids_list_to_tokens
 
+from vllm.utils.arg_parser import FlexibleArgumentParser
 from vllm.utils import (
-    FlexibleArgumentParser,
     bind_kv_cache,
     get_open_port,
     get_tcp_uri,

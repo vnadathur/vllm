@@ -58,7 +58,7 @@ except ImportError:
     librosa = PlaceholderModule("librosa")
 
 try:
-    from vllm.utils import FlexibleArgumentParser
+    from from vllm.utils.arg_parser import FlexibleArgumentParser
 except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 

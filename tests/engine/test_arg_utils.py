@@ -22,7 +22,7 @@ from vllm.engine.arg_utils import (
     optional_type,
     parse_type,
 )
-from vllm.utils import FlexibleArgumentParser
+from from vllm.utils.arg_parser import FlexibleArgumentParser
 
 
 @pytest.mark.parametrize(

@@ -18,7 +18,7 @@ from PIL.Image import Image
 from vllm import LLM, EngineArgs
 from vllm.entrypoints.score_utils import ScoreMultiModalParam
 from vllm.multimodal.utils import fetch_image
-from vllm.utils import FlexibleArgumentParser
+from from vllm.utils.arg_parser import FlexibleArgumentParser
 
 ROOT_DIR = Path(__file__).parent.parent.parent
 EXAMPLES_DIR = ROOT_DIR / "examples"
