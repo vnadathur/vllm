@@ -3,7 +3,7 @@
 
 import ast
 import copy
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from pydantic import Field, SkipValidation, model_validator
 from typing_extensions import Self
@@ -11,10 +11,9 @@ from typing_extensions import Self
 from vllm.config import LoadConfig
 from vllm.config.model import ModelConfig
 from vllm.config.parallel import ParallelConfig
-from vllm.config.utils import config
+from vllm.config.utils import CompileFactors, config, normalize_value
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import get_hf_text_config
-from vllm.utils.hashing import safe_hash
 from vllm.utils.import_utils import LazyLoader, has_arctic_inference
 
 if TYPE_CHECKING:
@@ -67,7 +66,7 @@ class SpeculativeConfig:
     enforce_eager: bool | None = None
     """Override the default enforce_eager from model_config"""
     # General speculative decoding control
-    num_speculative_tokens: int = Field(default=None, gt=0)  # type: ignore[assignment]
+    num_speculative_tokens: int = Field(default=None, gt=0)
     """The number of speculative tokens, if provided. It will default to the
     number in the draft model config if present, otherwise, it is required."""
     model: str | None = None
@@ -89,7 +88,7 @@ class SpeculativeConfig:
     warn users when they mistakenly provide the wrong argument."""
 
     # Draft model configuration
-    quantization: me_quant.QuantizationMethods | str | None = None
+    quantization: me_quant.QuantizationMethods | None = None
     """Quantization method that was used to quantize the draft model weights.
     If `None`, we assume the model weights are not quantized. Note that it only
     takes effect when using the draft model-based speculative method."""
@@ -178,7 +177,7 @@ class SpeculativeConfig:
     distribution, but the latter yields a higher acceptance rate at the cost
     of more memory to cache draft logits."""
 
-    def compute_hash(self) -> str:
+    def compile_factors(self) -> CompileFactors:
         """
         WARNING: Whenever a new field is added to this config,
         ensure that it is included in the factors list if
@@ -204,11 +203,10 @@ class SpeculativeConfig:
                 None,
             )
             if layer_ids is not None:
-                # Convert to tuple to make it hashable
                 factors.append(tuple(layer_ids))
 
-        hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
-        return hash_str
+        normalized = normalize_value(factors)
+        return {"factors": normalized} if normalized else {}
 
     @staticmethod
     def hf_config_override(hf_config: PretrainedConfig) -> PretrainedConfig:
@@ -455,7 +453,7 @@ class SpeculativeConfig:
             self.prompt_lookup_min = 0
 
             if self.model is not None:
-                self.draft_model_config = ModelConfig(
+                self.draft_model_config = cast(Any, ModelConfig)(
                     model=self.model,
                     runner="draft",
                     tokenizer=self.target_model_config.tokenizer,

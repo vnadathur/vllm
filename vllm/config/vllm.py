@@ -3,18 +3,17 @@
 
 import copy
 import getpass
-import json
 import os
 import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import is_dataclass
+from dataclasses import is_dataclass, replace
 from datetime import datetime
 from enum import IntEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, get_args
 
 import torch
 from pydantic import ConfigDict, Field, model_validator
@@ -23,7 +22,6 @@ import vllm.envs as envs
 from vllm.logger import enable_trace_function_call, init_logger
 from vllm.transformers_utils.runai_utils import is_runai_obj_uri
 from vllm.utils import random_uuid
-from vllm.utils.hashing import safe_hash
 
 from .attention import AttentionConfig
 from .cache import CacheConfig
@@ -40,11 +38,15 @@ from .observability import ObservabilityConfig
 from .offload import OffloadConfig
 from .parallel import ParallelConfig
 from .profiler import ProfilerConfig
-from .reasoning import ReasoningConfig
 from .scheduler import SchedulerConfig
 from .speculative import EagleModelTypes, NgramGPUTypes, SpeculativeConfig
 from .structured_outputs import StructuredOutputsConfig
-from .utils import SupportsHash, config, replace
+from .utils import (
+    CompileFactors,
+    SupportsCompileFactors,
+    config,
+    hash_factors,
+)
 from .weight_transfer import WeightTransferConfig
 
 if TYPE_CHECKING:
@@ -244,15 +246,15 @@ OPTIMIZATION_LEVEL_TO_CONFIG = {
 }
 
 
-@config(config=ConfigDict(arbitrary_types_allowed=True))  # type: ignore[arg-type,misc]
-class VllmConfig:  # type: ignore[misc]
+@config(config=ConfigDict(arbitrary_types_allowed=True))
+class VllmConfig:
     """Dataclass which contains all vllm-related configuration. This
     simplifies passing around the distinct configurations in the codebase.
     """
 
     # TODO: use default_factory once default constructing ModelConfig doesn't
     # try to download a model
-    model_config: ModelConfig = Field(default=None)  # type: ignore[assignment]
+    model_config: ModelConfig = Field(default=None)
     """Model configuration."""
     cache_config: CacheConfig = Field(default_factory=CacheConfig)
     """Cache configuration."""
@@ -303,12 +305,10 @@ class VllmConfig:  # type: ignore[misc]
     """The configurations for event publishing."""
     ec_transfer_config: ECTransferConfig | None = None
     """The configurations for distributed EC cache transfer."""
-    reasoning_config: ReasoningConfig | None = None
-    """The configurations for reasoning model."""
     # some opaque config, only used to provide additional information
     # for the hash computation, mainly used for testing, debugging or out of
     # tree config registration.
-    additional_config: dict | SupportsHash = Field(default_factory=dict)
+    additional_config: dict | SupportsCompileFactors = Field(default_factory=dict)
     """Additional config for specified platform. Different platforms may
     support different configs. Make sure the configs are valid for the platform
     you are using. Contents must be hashable."""
@@ -336,7 +336,7 @@ class VllmConfig:  # type: ignore[misc]
     remaining requests are aborted once the timeout is reached.
     """
 
-    def compute_hash(self) -> str:
+    def compile_factors(self) -> CompileFactors:
         """
         WARNING: Whenever a new field is added to this config,
         ensure that it is included in the factors list if
@@ -348,97 +348,49 @@ class VllmConfig:  # type: ignore[misc]
         excluding anything before input ids/embeddings and after
         the final hidden states.
         """
-        factors: list[Any] = []
-
-        # summarize vllm config
-        vllm_factors: list[Any] = []
         from vllm import __version__
 
-        vllm_factors.append(__version__)
-        if self.model_config:
-            vllm_factors.append(self.model_config.compute_hash())
-            if (
-                self.compilation_config
-                and getattr(self.compilation_config, "compile_mm_encoder", False)
-                and self.model_config.multimodal_config
-            ):
-                vllm_factors.append(self.model_config.multimodal_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.cache_config:
-            vllm_factors.append(self.cache_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.parallel_config:
-            vllm_factors.append(self.parallel_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.scheduler_config:
-            vllm_factors.append(self.scheduler_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.device_config:
-            vllm_factors.append(self.device_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.load_config:
-            vllm_factors.append(self.load_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.offload_config:
-            vllm_factors.append(self.offload_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.attention_config:
-            vllm_factors.append(self.attention_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.lora_config:
-            vllm_factors.append(self.lora_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.speculative_config:
-            vllm_factors.append(self.speculative_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.structured_outputs_config:
-            vllm_factors.append(self.structured_outputs_config.compute_hash())
-        if self.profiler_config:
-            vllm_factors.append(self.profiler_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        vllm_factors.append(self.observability_config.compute_hash())
-        if self.quant_config:
-            pass  # should be captured by model_config.quantization
-        if self.compilation_config:
-            vllm_factors.append(self.compilation_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.kv_transfer_config:
-            vllm_factors.append(self.kv_transfer_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.ec_transfer_config:
-            vllm_factors.append(self.ec_transfer_config.compute_hash())
-        else:
-            vllm_factors.append("None")
-        if self.additional_config:
-            if isinstance(additional_config := self.additional_config, dict):
-                additional_config_hash = safe_hash(
-                    json.dumps(additional_config, sort_keys=True).encode(),
-                    usedforsecurity=False,
-                ).hexdigest()
-            else:
-                additional_config_hash = additional_config.compute_hash()
-            vllm_factors.append(additional_config_hash)
-        else:
-            vllm_factors.append("None")
-        factors.append(vllm_factors)
+        def get_factors(config_obj: SupportsCompileFactors | None) -> CompileFactors:
+            return {} if config_obj is None else config_obj.compile_factors()
 
-        hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()[
-            :10
-        ]
-        return hash_str
+        factors: dict[str, Any] = {
+            "version": __version__,
+            "model": get_factors(self.model_config),
+            "cache": get_factors(self.cache_config),
+            "parallel": get_factors(self.parallel_config),
+            "scheduler": get_factors(self.scheduler_config),
+            "device": get_factors(self.device_config),
+            "load": get_factors(self.load_config),
+            "offload": get_factors(self.offload_config),
+            "attention": get_factors(self.attention_config),
+            "speculative": get_factors(self.speculative_config),
+            "structured_outputs": get_factors(self.structured_outputs_config),
+            "observability": get_factors(self.observability_config),
+            "profiler": get_factors(self.profiler_config),
+            "compilation": get_factors(self.compilation_config),
+            "kv_transfer": get_factors(self.kv_transfer_config),
+            "ec_transfer": get_factors(self.ec_transfer_config),
+            "lora": get_factors(self.lora_config),
+        }
+
+        if self.additional_config:
+            additional_config = self.additional_config
+            if isinstance(additional_config, dict):
+                factors["additional"] = additional_config
+            elif isinstance(additional_config, SupportsCompileFactors):
+                factors["additional"] = additional_config.compile_factors()
+            else:
+                raise TypeError(
+                    "additional_config must be a dict or SupportsCompileFactors"
+                )
+        else:
+            factors["additional"] = {}
+
+        return factors
+
+    def compute_hash(self) -> str:
+        """Return a stable hash of the compilation-relevant factors."""
+        return hash_factors(self.compile_factors())
 
     @property
     def num_speculative_tokens(self) -> int:
@@ -576,7 +528,7 @@ class VllmConfig:  # type: ignore[misc]
         model_config.hf_config = hf_config
         model_config.model_arch_config = model_config.get_model_arch_config()
 
-        return replace(self, model_config=model_config)
+        return cast(VllmConfig, replace(cast(Any, self), model_config=model_config))
 
     def _set_config_default(self, config_obj: Any, key: str, value: Any) -> None:
         """Set config attribute to default if not already set by user.
@@ -770,19 +722,6 @@ class VllmConfig:  # type: ignore[misc]
                 self.parallel_config.disable_nccl_for_dp_synchronization = False
 
         if (
-            self.speculative_config is not None
-            and self.scheduler_config.async_scheduling
-            and self.model_config is not None
-            and not self.model_config.disable_cascade_attn
-        ):
-            logger.warning_once(
-                "Disabling cascade attention (not yet compatible with "
-                "async speculative decoding).",
-                scope="local",
-            )
-            self.model_config.disable_cascade_attn = True
-
-        if (
             self.model_config is not None
             and self.model_config.multimodal_config is not None
             and self.model_config.multimodal_config.mm_tensor_ipc == "torch_shm"
@@ -899,7 +838,7 @@ class VllmConfig:  # type: ignore[misc]
 
                     tp_size = self.parallel_config.tensor_parallel_size
                     hidden_size = self.model_config.get_hidden_size()
-                    element_size = self.model_config.dtype.itemsize  # type: ignore[union-attr]
+                    element_size = cast(torch.dtype, self.model_config.dtype).itemsize
                     pass_config.sp_min_token_num = get_sequence_parallelism_threshold(
                         hidden_size, tp_size, element_size
                     )
@@ -1077,7 +1016,7 @@ class VllmConfig:  # type: ignore[misc]
 
             is_fullgraph = (
                 self.compilation_config.use_inductor_graph_partition
-                or len(self.compilation_config.splitting_ops or []) == 0
+                or len(self.compilation_config.splitting_ops) == 0
             )
             if self.parallel_config.pipeline_parallel_size > 1 or not is_fullgraph:
                 if "-rms_norm" not in self.compilation_config.custom_ops:
@@ -1115,9 +1054,11 @@ class VllmConfig:  # type: ignore[misc]
                     "when cudagraph_mode piecewise cudagraphs is used, "
                     f"cudagraph_mode={self.compilation_config.cudagraph_mode}"
                 )
+        from vllm.model_executor.layers.batch_invariant import vllm_is_batch_invariant
+
         if (
             self.model_config
-            and envs.VLLM_BATCH_INVARIANT
+            and vllm_is_batch_invariant()
             and not self.model_config.disable_cascade_attn
         ):
             self.model_config.disable_cascade_attn = True
@@ -1145,9 +1086,6 @@ class VllmConfig:  # type: ignore[misc]
 
         if not self.instance_id:
             self.instance_id = random_uuid()[:5]
-
-        if self.reasoning_config is not None and self.model_config is not None:
-            self.reasoning_config.initialize_token_ids(self.model_config)
 
         # Hybrid KV cache manager (HMA) runtime rules:
         # - Explicit enable (--no-disable-kv-cache-manager): error if runtime
@@ -1233,7 +1171,7 @@ class VllmConfig:  # type: ignore[misc]
                 )
             self.compilation_config.debug_dump_path = env_path
 
-        def has_blocked_weights():  # type: ignore[no-redef]
+        def has_blocked_weights_after_dump_path():
             if self.quant_config is not None:
                 if hasattr(self.quant_config, "weight_block_size"):
                     return self.quant_config.weight_block_size is not None
@@ -1245,7 +1183,7 @@ class VllmConfig:  # type: ignore[misc]
         # On H100 the CUDA kernel is faster than
         # native implementation
         # https://github.com/vllm-project/vllm/issues/25094
-        if has_blocked_weights():
+        if has_blocked_weights_after_dump_path():
             custom_ops = self.compilation_config.custom_ops
             if "-quant_fp8" not in custom_ops:
                 custom_ops.append("+quant_fp8")
@@ -1491,7 +1429,7 @@ class VllmConfig:  # type: ignore[misc]
             if max_size is not None:
                 max_token_num = max_size // (
                     self.model_config.get_hidden_size()
-                    * self.model_config.dtype.itemsize  # type: ignore[union-attr]
+                    * cast(torch.dtype, self.model_config.dtype).itemsize
                 )
                 if compile_range_end is not None and max_token_num < compile_range_end:
                     computed_compile_ranges_endpoints.append(max_token_num)
@@ -1514,7 +1452,7 @@ class VllmConfig:  # type: ignore[misc]
 
                 tp_size = self.parallel_config.tensor_parallel_size
                 hidden_size = self.model_config.get_hidden_size()
-                element_size = self.model_config.dtype.itemsize  # type: ignore[union-attr]
+                element_size = cast(torch.dtype, self.model_config.dtype).itemsize
                 pass_config.sp_min_token_num = get_sequence_parallelism_threshold(
                     hidden_size, tp_size, element_size
                 )

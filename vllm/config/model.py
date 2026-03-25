@@ -5,7 +5,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import InitVar, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast, get_args
 
 import torch
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -22,10 +22,10 @@ from vllm.config.multimodal import (
 )
 from vllm.config.pooler import PoolerConfig
 from vllm.config.scheduler import RunnerType
-from vllm.config.utils import config, getattr_iter
+from vllm.config.utils import CompileFactors, config, get_compile_factors, getattr_iter
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
-from vllm.tasks import PoolingTask, ScoreType, SupportedTask
+from vllm.tasks import ScoreType
 from vllm.transformers_utils.config import (
     ConfigFormat,
     get_config,
@@ -79,9 +79,9 @@ else:
 
 logger = init_logger(__name__)
 
-RunnerOption = Literal["auto", RunnerType]
-ConvertType = Literal["none", "embed", "classify"]
-ConvertOption = Literal["auto", ConvertType]
+RunnerOption: TypeAlias = Literal["auto"] | RunnerType
+ConvertType: TypeAlias = Literal["none", "embed", "classify", "reward"]
+ConvertOption: TypeAlias = Literal["auto"] | ConvertType
 TokenizerMode = Literal["auto", "hf", "slow", "mistral", "deepseek_v32"]
 ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
 LogprobsMode = Literal[
@@ -93,7 +93,7 @@ LayerBlockType = Literal["attention", "linear_attention", "mamba"]
 
 _RUNNER_CONVERTS: dict[RunnerType, list[ConvertType]] = {
     "generate": [],
-    "pooling": ["embed", "classify"],
+    "pooling": ["embed", "classify", "reward"],
     "draft": [],
 }
 
@@ -102,8 +102,8 @@ AttnTypeStr = Literal[
 ]
 
 
-@config(config=ConfigDict(arbitrary_types_allowed=True))  # type: ignore[arg-type,misc]
-class ModelConfig:  # type: ignore[misc]
+@config(config=ConfigDict(arbitrary_types_allowed=True))
+class ModelConfig:
     """Configuration for the model."""
 
     model: str = "Qwen/Qwen3-0.6B"
@@ -121,7 +121,7 @@ class ModelConfig:  # type: ignore[misc]
     """Convert the model using adapters defined in
     [vllm.model_executor.models.adapters][]. The most common use case is to
     adapt a text generation model to be used for pooling tasks."""
-    tokenizer: str = Field(default=None)  # type: ignore[assignment]
+    tokenizer: str = Field(default=None)
     """Name or path of the Hugging Face tokenizer to use. If unspecified, model
     name or path will be used."""
     tokenizer_mode: TokenizerMode | str = "auto"
@@ -177,7 +177,7 @@ class ModelConfig:  # type: ignore[misc]
     """The specific revision to use for the tokenizer on the Hugging Face Hub.
     It can be a branch name, a tag name, or a commit id. If unspecified, will
     use the default version."""
-    max_model_len: int = Field(default=None, ge=-1)  # type: ignore[assignment]
+    max_model_len: int = Field(default=None, ge=-1)
     """Model context length (prompt and output). If unspecified, will be
     automatically derived from the model config.
 
@@ -301,33 +301,40 @@ class ModelConfig:  # type: ignore[misc]
     multimodal_config: MultiModalConfig | None = None
     """Configuration for multimodal model. If `None`, this will be inferred
     from the architecture of `self.model`."""
-    language_model_only: InitVar[bool] = False
-    limit_mm_per_prompt: InitVar[dict[str, int | dict[str, int]] | None] = None
-    enable_mm_embeds: InitVar[bool | None] = None
-    media_io_kwargs: InitVar[dict[str, dict[str, Any]] | None] = None
-    mm_processor_kwargs: InitVar[dict[str, Any] | None] = None
-    mm_processor_cache_gb: InitVar[float | None] = None
-    mm_processor_cache_type: InitVar[MMCacheType | None] = None
-    mm_shm_cache_max_object_size_mb: InitVar[int | None] = None
-    mm_encoder_only: InitVar[bool | None] = None
-    mm_encoder_tp_mode: InitVar[MMEncoderTPMode | None] = None
-    mm_encoder_attn_backend: InitVar[AttentionBackendEnum | str | None] = None
-    interleave_mm_strings: InitVar[bool | None] = None
-    skip_mm_profiling: InitVar[bool | None] = None
-    video_pruning_rate: InitVar[float | None] = None
-    mm_tensor_ipc: InitVar[MMTensorIPC] = None
+    language_model_only: InitVar[bool] = cast(Any, False)
+    limit_mm_per_prompt: InitVar[dict[str, int | dict[str, int]] | None] = cast(
+        Any, None
+    )
+    enable_mm_embeds: InitVar[bool | None] = cast(Any, None)
+    media_io_kwargs: InitVar[dict[str, dict[str, Any]] | None] = cast(Any, None)
+    mm_processor_kwargs: InitVar[dict[str, Any] | None] = cast(Any, None)
+    mm_processor_cache_gb: InitVar[float | None] = cast(Any, None)
+    mm_processor_cache_type: InitVar[MMCacheType | None] = cast(Any, None)
+    mm_shm_cache_max_object_size_mb: InitVar[int | None] = cast(Any, None)
+    mm_encoder_only: InitVar[bool | None] = cast(Any, None)
+    mm_encoder_tp_mode: InitVar[MMEncoderTPMode | None] = cast(Any, None)
+    mm_encoder_attn_backend: InitVar[AttentionBackendEnum | str | None] = cast(
+        Any, None
+    )
+    interleave_mm_strings: InitVar[bool | None] = cast(Any, None)
+    skip_mm_profiling: InitVar[bool | None] = cast(Any, None)
+    video_pruning_rate: InitVar[float | None] = cast(Any, None)
+    mm_tensor_ipc: InitVar[MMTensorIPC] = cast(Any, None)
 
-    def compute_hash(self) -> str:
+    def compile_factors(self) -> CompileFactors:
         """
-        WARNING: Whenever a new field is added to this config,
-        ensure that it is included in the factors list if
-        it affects the computation graph.
+        WARNING: Whenever a new field is added to this config, review
+        `ignored_factors` to decide whether that field must be excluded.
+        Every other dataclass field automatically participates in the hash.
 
         Provide a hash that uniquely identifies all the configs
         that affect the structure of the computation
         graph from input ids/embeddings to the final hidden states,
         excluding anything before input ids/embeddings and after
         the final hidden states.
+
+        This config is opt-out hashed: include every dataclass field except for
+        those explicitly listed in `ignored_factors`.
         """
         ignored_factors = {
             "convert",
@@ -351,28 +358,10 @@ class ModelConfig:  # type: ignore[misc]
             "logits_processors",
             "io_processor_plugin",
             "pooler_config",
-            "multimodal_config",
-            "limit_mm_per_prompt",
-            "media_io_kwargs",
-            "mm_processor_kwargs",
-            "mm_processor_cache_gb",
-            "mm_processor_cache_type",
-            "mm_shm_cache_max_object_size_mb",
-            "mm_encoder_tp_mode",
-            "interleave_mm_strings",
-            "skip_mm_profiling",
         }
 
-        from vllm.config.utils import get_hash_factors, hash_factors
-
-        factors = get_hash_factors(self, ignored_factors)
-
-        # NOTE: For some models (e.g, Qwen3-VL), whether the MM code path is enabled
-        # affects the computation graph of the language model, therefore we add it
-        # here early.
-        if self.multimodal_config:
-            factors["language_model_only"] = self.multimodal_config.language_model_only
-        return hash_factors(factors)
+        factors = get_compile_factors(self, ignored_factors)
+        return factors or {}
 
     def _update_nested(
         self,
@@ -488,7 +477,6 @@ class ModelConfig:  # type: ignore[misc]
             self.config_format,
             hf_overrides_kw=hf_overrides_kw,
             hf_overrides_fn=hf_overrides_fn,
-            token=self.hf_token,
         )
         hf_config = maybe_patch_hf_config_from_gguf(
             self.model,
@@ -583,7 +571,7 @@ class ModelConfig:  # type: ignore[misc]
             self.dtype,
             is_pooling_model=self.runner_type == "pooling",
             revision=self.revision,
-            config_format=self.config_format,  # type: ignore[arg-type]
+            config_format=self.config_format,
         )
 
         self.original_max_model_len = self.max_model_len
@@ -627,7 +615,7 @@ class ModelConfig:  # type: ignore[misc]
                 k: v for k, v in mm_config_kwargs.items() if v is not None
             }
 
-            self.multimodal_config = MultiModalConfig(**mm_config_kwargs)  # type: ignore[arg-type]
+            self.multimodal_config = MultiModalConfig(**mm_config_kwargs)
 
         # Multimodal GGUF models must use original repo for mm processing
         if is_gguf(self.tokenizer) and self.is_multimodal_model:
@@ -733,7 +721,7 @@ class ModelConfig:  # type: ignore[misc]
 
     @property
     def architectures(self) -> list[str]:
-        return self.model_arch_config.architectures  # type: ignore[return-value]
+        return self.model_arch_config.architectures
 
     @property
     def architecture(self) -> str:
@@ -1005,7 +993,7 @@ class ModelConfig:  # type: ignore[misc]
         is_bitsandbytes = self.quantization == "bitsandbytes"
         has_quantization_config = self.model_arch_config.quantization_config is not None
         is_8bit = (
-            self.model_arch_config.quantization_config.get("load_in_8bit", False)  # type: ignore[union-attr]
+            self.model_arch_config.quantization_config.get("load_in_8bit", False)
             if has_quantization_config
             else False
         )
@@ -1266,7 +1254,7 @@ class ModelConfig:  # type: ignore[misc]
 
             # Hybrid model Minimax
             attn_type_list = getattr(self.hf_config, "attn_type_list", None)
-            if attn_type_list:
+            if attn_type_list is not None:
                 return sum(t == 1 for t in attn_type_list[start:end])
 
             # Hybrid model Qwen3Next Qwen3.5 Series
@@ -1293,7 +1281,6 @@ class ModelConfig:  # type: ignore[misc]
                     "attn_type_list, or a layer_types in the hf_config, "
                     f"cannot determine the num of {block_type} layers"
                 )
-            raise AssertionError(f"Unsupported block type: {block_type}")
 
     def get_mamba_chunk_size(self) -> int | None:
         """
@@ -1342,14 +1329,12 @@ class ModelConfig:  # type: ignore[misc]
                 trust_remote_code=self.trust_remote_code,
                 revision=self.revision,
                 config_format=self.config_format,
-                hf_token=self.hf_token,
             )
         else:
             config = try_get_generation_config(
                 self.generation_config,
                 trust_remote_code=self.trust_remote_code,
                 config_format=self.config_format,
-                hf_token=self.hf_token,
             )
 
         if config is None:
@@ -1411,41 +1396,6 @@ class ModelConfig:  # type: ignore[misc]
             )
 
         return diff_sampling_param
-
-    def get_pooling_task(
-        self, supported_tasks: tuple[SupportedTask, ...]
-    ) -> PoolingTask | None:
-        if self.pooler_config is None:
-            return None
-
-        pooling_task = self.pooler_config.task
-
-        if pooling_task is not None:
-            if self.pooler_config.task in supported_tasks:
-                return self.pooler_config.task
-            else:
-                raise RuntimeError(
-                    f"Unsupported task: {pooling_task!r} "
-                    f"Supported tasks: {supported_tasks}"
-                )
-
-        if "token_classify" in supported_tasks:
-            for architecture in self.architectures:
-                if "ForTokenClassification" in architecture:
-                    return "token_classify"
-
-        priority: list[PoolingTask] = [
-            "embed&token_classify",
-            "embed",
-            "classify",
-            "token_embed",
-            "token_classify",
-            "plugin",
-        ]
-        for task in priority:
-            if task in supported_tasks:
-                return task
-        return None
 
     @cached_property
     def is_encoder_decoder(self) -> bool:
